@@ -1,0 +1,5 @@
+text; Generate {joke_type} joke about {noun}.
+text; Write 4chan green text about {noun}.
+text; Write short, 2 verse long, song about {noun}.
+text; Write funny poem about {noun}.
+
