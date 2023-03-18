@@ -4,7 +4,7 @@ use tokio::{fs::*, io::{BufReader, AsyncBufReadExt}};
 use rand::prelude::*;
 use regex::Regex;
 use censor::Censor;
-use serde_json::{Value, Map};
+use serde_json;
 
 #[derive(Debug)]
 enum PromptType {
@@ -34,7 +34,9 @@ impl Prompt {
         let buf_reader = BufReader::new(file);
         let mut lines = buf_reader.lines();
         while let Some(line) = lines.next_line().await? {
-            fill_ins.push(line);
+            if !line.starts_with("#") {
+                fill_ins.push(line);
+            }
         }
         Ok(fill_ins)
     } 
@@ -46,7 +48,7 @@ impl Prompt {
     }
 
     async fn interpolate(&self) -> Result<String, Box<dyn Error>> {
-        let regex = r#"\{[a-z_\-]+\}"#;
+        let regex = r#"\{[a-z_\-]+\}"#; // regex? really?
         let mut interpolated = self.prompt.clone();
         let regex = Regex::new(regex).expect("Invalid regex for interpolating");
         for m in regex.find_iter(&self.prompt) {
@@ -55,7 +57,7 @@ impl Prompt {
                 .strip_prefix("{").unwrap()
                 .strip_suffix("}").unwrap();
             let value = self.choose_random_item(fill_in_file.into()).await?;
-            interpolated = interpolated.replace(item, &value);
+            interpolated = interpolated.replacen(item, &value, 1);
         }
         Ok(interpolated)
     }
@@ -77,20 +79,22 @@ async fn load_prompts() -> Result<Vec<Prompt>, Box<dyn Error>> {
     let buf_reader = BufReader::new(file);
     let mut lines = buf_reader.lines();
     while let Some(line) = lines.next_line().await? {
-        let splitted_line: Vec<_> = line.split(";").collect();
-        if splitted_line.len() == 2 {
-            prompts.push(splitted_line.into())
+        if !line.starts_with("#") {
+            let splitted_line: Vec<_> = line.split(";").collect();
+            if splitted_line.len() == 2 {
+                prompts.push(splitted_line.into())
+            }
         }
     }
     Ok(prompts)
 }
 
-async fn query_chat_gpt(prompt: String) -> Result<String, Box<dyn Error>> {
+async fn query_chat_gpt(model: String, prompt: String) -> Result<String, Box<dyn Error>> {
     let client = Client::new();
     let prompt = prompt.clone();
     let request = CreateChatCompletionRequestArgs::default()
     .max_tokens(768u16)
-    .model("gpt-3.5-turbo")
+    .model(model)
     .messages([
         ChatCompletionRequestMessageArgs::default()
             .role(Role::System)
@@ -108,13 +112,31 @@ async fn query_chat_gpt(prompt: String) -> Result<String, Box<dyn Error>> {
 async fn main() -> Result<(), Box<dyn Error>> {
     let prompts = load_prompts().await?;
     let prompt = prompts.choose(&mut thread_rng()).unwrap();
-    let prompt = prompt.interpolate().await?;
-    let prompt = format!("Respond only with JSON with 'text' field. {}", prompt);
-    println!("Interpolated prompt: {:#?}", &prompt);
-    let response = query_chat_gpt(prompt).await?;
-    println!("Response from ChatGPT\n{}", &response);
-    let censor = Censor::Standard;
-    let censored_response = censor.replace_with_offsets(&response, "*", 1, 0);
-    println!("Censored response from ChatGPT\n{}", &censored_response);
+    let prompt_text = &prompt.prompt;
+    let interpolated_prompt = prompt.interpolate().await?;
+    let full_prompt = format!("Respond only with JSON with 'text' field. {}", interpolated_prompt);
+    println!("Full prompt: {:#?}", &full_prompt);
+    let model = if thread_rng().gen_bool(0.9) {
+        "gpt-3.5-turbo"
+    } else {
+        "gpt-4"
+    }.to_string();
+    println!("GPT model: {}", &model);
+    let response = query_chat_gpt(model.clone(), full_prompt).await?;
+    println!("Response JSON from ChatGPT\n{}", &response);
+    let map: serde_json::Map<String, serde_json::Value> = serde_json::from_str(&response).unwrap();
+    let text = map["text"].as_str().expect("Cannot parse JSON!");
+    let censor = Censor::Standard + Censor::Sex - "ex" - "sex";
+    let text = censor.replace_with_offsets(&text, "*", 1, 0);
+    println!("Parsed and censored text:\n\n{}\n", &text);
+
+    let debug_info = format!(r#"
+═══════════════
+🤖 {model}
+❓ {prompt_text}
+❗ {interpolated_prompt}
+    "#); 
+
+    println!("DEBUG INFO TO POST \n{}", debug_info);
     Ok(())
 }
