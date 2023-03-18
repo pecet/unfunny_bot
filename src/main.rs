@@ -108,6 +108,27 @@ async fn query_chat_gpt(model: String, prompt: String) -> Result<String, Box<dyn
     Ok(first_response)
 }
 
+async fn send_mastodon_msg(text: String) -> Result<String, Box<dyn Error>> {
+    let params = [
+        ("status", text.clone()),
+        ("visibility", "public".to_owned()),
+        ("language", "en".to_owned()),
+    ];
+    let instance = env::var("MAST_INSTANCE")?;
+    let token = env::var("MAST_TOKEN")?;
+    let url = format!("https://{instance}/api/v1/statuses");
+    let client = reqwest::Client::new();
+    let response = client
+        .post(url)
+        .bearer_auth(token)
+        .form(&params)
+        .send()
+        .await?;
+    let text = response.text().await?;
+    Ok(text)
+}
+
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
     let prompts = load_prompts().await?;
@@ -126,7 +147,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     println!("Response JSON from ChatGPT\n{}", &response);
     let map: serde_json::Map<String, serde_json::Value> = serde_json::from_str(&response).unwrap();
     let text = map["text"].as_str().expect("Cannot parse JSON!");
-    let censor = Censor::Standard + Censor::Sex - "ex" - "sex";
+    let censor = Censor::Standard + Censor::Sex - "sex";
     let text = censor.replace_with_offsets(&text, "*", 1, 0);
     println!("Parsed and censored text:\n\n{}\n", &text);
 
@@ -135,8 +156,13 @@ async fn main() -> Result<(), Box<dyn Error>> {
 🤖 {model}
 ❓ {prompt_text}
 ❗ {interpolated_prompt}
-    "#); 
+    "#);
 
-    println!("DEBUG INFO TO POST \n{}", debug_info);
+    println!("DEBUG INFO TO POST \n{}", &debug_info);
+
+    let message_to_send = format!("{text}\n\n{debug_info}");
+    send_mastodon_msg(message_to_send).await?;
+
+    println!("Mastodon message sent!!!");
     Ok(())
 }

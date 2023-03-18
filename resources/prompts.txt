@@ -8,3 +8,6 @@ text; {write} short 2 verse long {song_type} song about {noun} with chorus about
 text; {write} haiku about {noun}.
 text; {write} very funny love letter to {noun} mention {noun}.
 text; Ask silly question about {noun}. Respond with funny response.
+text; In most funny way explain how {noun} works.
+text; What you will get if you cross {noun} and {noun}? Give funniest anwser, include question.
+text; {write} very short funny story about {noun}.
