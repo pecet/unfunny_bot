@@ -5,6 +5,7 @@ use rand::prelude::*;
 use regex::Regex;
 use censor::Censor;
 use serde_json;
+use image2::{*, text::{font, load_font}};
 
 #[derive(Debug)]
 enum PromptType {
@@ -60,6 +61,32 @@ impl Prompt {
             interpolated = interpolated.replacen(item, &value, 1);
         }
         Ok(interpolated)
+    }
+
+    fn prompt_json(&self) -> String {
+        match self.prompt_type {
+            PromptType::Text => "Respond only with JSON with 'text' field.",
+            PromptType::Image => "Respond only with JSON with 'top_text' and 'bottom_text' for image meme macro.",
+        }.to_owned()
+    }
+
+    fn parse_json(&self, response: &str) -> Vec<String> {
+        let mut vec: Vec<String> = vec![];
+        match self.prompt_type {
+            PromptType::Text => {
+                let map: serde_json::Map<String, serde_json::Value> = serde_json::from_str(response).unwrap();
+                let text = map["text"].as_str().expect("Cannot parse JSON!");
+                vec.push(text.to_owned()); 
+            },
+            PromptType::Image => {
+                let map: serde_json::Map<String, serde_json::Value> = serde_json::from_str(response).unwrap();
+                let bottom_text = map["bottom_text"].as_str().expect("Cannot parse bottom text from JSON!");
+                let top_text = map["top_text"].as_str().expect("Cannot parse top text from JSON!");
+                vec.push(top_text.to_owned());
+                vec.push(bottom_text.to_owned());
+            },
+        }
+        vec
     }
 }
 
@@ -128,14 +155,28 @@ async fn send_mastodon_msg(text: String) -> Result<String, Box<dyn Error>> {
     Ok(text)
 }
 
+fn generate_image(image_name: &str, top_text: &str, bottom_text: &str) -> Result<(), Box<dyn Error>> {
+    let font = load_font("font/Anton-Regular.ttf")?;
+    let image_name = format!("resources/{}.jpg", image_name);
+    let mut image = Image::<f32, Rgb>::open(image_name)?;
+    let px: Pixel<Rgb> = Pixel::from(vec![1.0_f64, 1.0, 1.0]);
+    let image_height = image.size().height;
+
+    image.draw_text(top_text, &font, 120.0, (25, 120), &px);
+    image.draw_text(bottom_text, &font, 120.0, (25, image_height - 120 / 2), &px);
+
+    image.save("output/output.jpg")?;
+    Ok(())
+}
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
-    let prompts = load_prompts().await?;
+    generate_image("badluckbryan", "LIVE IN CURRENT WORLD", "PRETEND THAT LIFE MAKES SENSE")?;
+/*    let prompts = load_prompts().await?;
     let prompt = prompts.choose(&mut thread_rng()).unwrap();
     let prompt_text = &prompt.prompt;
     let interpolated_prompt = prompt.interpolate().await?;
-    let full_prompt = format!("Respond only with JSON with 'text' field. {}", interpolated_prompt);
+    let full_prompt = format!("{} {}", prompt.prompt_json(), interpolated_prompt);
     println!("Full prompt: {:#?}", &full_prompt);
     let model = if thread_rng().gen_bool(0.9) {
         "gpt-3.5-turbo"
@@ -144,12 +185,26 @@ async fn main() -> Result<(), Box<dyn Error>> {
     }.to_string();
     println!("GPT model: {}", &model);
     let response = query_chat_gpt(model.clone(), full_prompt).await?;
+    let censor = Censor::Standard + Censor::Sex - "sex" - "ass";
+
     println!("Response JSON from ChatGPT\n{}", &response);
-    let map: serde_json::Map<String, serde_json::Value> = serde_json::from_str(&response).unwrap();
-    let text = map["text"].as_str().expect("Cannot parse JSON!");
-    let censor = Censor::Standard + Censor::Sex - "sex";
-    let text = censor.replace_with_offsets(&text, "*", 1, 0);
-    println!("Parsed and censored text:\n\n{}\n", &text);
+    match prompt.prompt_type {
+        PromptType::Text => {
+            let text = &prompt.parse_json(&response)[0];
+            let text = censor.replace_with_offsets(&text, "*", 1, 0);
+            println!("Text post:\n{}", &text);
+        },
+        PromptType::Image => {
+            let top_text = &prompt.parse_json(&response)[0];
+            let top_text = censor.replace_with_offsets(&top_text, "*", 1, 0);
+            let bottom_text = &prompt.parse_json(&response)[1];
+            let bottom_text = censor.replace_with_offsets(&bottom_text, "*", 1, 0);
+            println!("Image meme");
+            println!("TOP TEXT    : {}", &top_text);
+            println!("BOTTOM TEXT : {}", &bottom_text);
+        },
+    }
+
 
     let debug_info = format!(r#"
 ═══════════════
@@ -158,11 +213,13 @@ async fn main() -> Result<(), Box<dyn Error>> {
 ❗ {interpolated_prompt}
     "#);
 
-    println!("DEBUG INFO TO POST \n{}", &debug_info);
+    println!("\n\nDEBUG INFO TO POST \n{}", &debug_info);
 
-    let message_to_send = format!("{text}\n\n{debug_info}");
-    send_mastodon_msg(message_to_send).await?;
+    // let message_to_send = format!("{text}\n\n{debug_info}");
+    // send_mastodon_msg(message_to_send).await?;
 
-    println!("Mastodon message sent!!!");
+    // println!("Mastodon message sent!!!");
+
+*/
     Ok(())
 }
