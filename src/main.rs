@@ -80,8 +80,8 @@ impl Prompt {
             },
             PromptType::Image => {
                 let map: serde_json::Map<String, serde_json::Value> = serde_json::from_str(response).unwrap();
-                let bottom_text = map["bottom_text"].as_str().expect("Cannot parse bottom text from JSON!");
-                let top_text = map["top_text"].as_str().expect("Cannot parse top text from JSON!");
+                let bottom_text = map["bottom_text"].as_str().expect("Cannot parse bottom text from JSON!").to_uppercase().replace("\n", " ");
+                let top_text = map["top_text"].as_str().expect("Cannot parse top text from JSON!").to_uppercase().replace("\n", " ");
                 vec.push(top_text.to_owned());
                 vec.push(bottom_text.to_owned());
             },
@@ -167,18 +167,34 @@ fn generate_image(image_name: &str, top_text: &str, bottom_text: &str) -> Result
     let font = load_font("font/Anton-Regular.ttf")?;
     let image_name = format!("images/{}.jpg", image_name);
     let mut image = Image::<f32, Rgb>::open(image_name)?;
-    let px: Pixel<Rgb> = Pixel::from(vec![1.0_f64, 1.0, 1.0]);
     let size = 55.0_f32;
     let image_width = image.size().width;
     let image_height = image.size().height;
 
-    let text_width = width(&top_text, &font, size);
-    let x = (image_width - text_width) / 2;
-    image.draw_text(top_text, &font, size, (x, size as usize), &px);
+    for offset in 0..=4 {
+        let offset = 4 - offset;
+        let px: Pixel<Rgb> = if offset != 0 {
+            Pixel::from(vec![1.0_f64, 1.0, 1.0])
+        } else {
+            Pixel::from(vec![0.0_f64, 0.0, 0.0])
+        };
 
-    let text_width = width(&bottom_text, &font, size);
-    let x = (image_width - text_width) / 2;
-    image.draw_text(bottom_text, &font, size, (x, image_height - 20), &px);
+        let text_width = width(&top_text, &font, size);
+        let x = if text_width < image_width {
+            (image_width - text_width) / 2
+        } else {
+            0
+        };
+        image.draw_text(top_text, &font, size, (x + offset, size as usize + offset), &px);
+    
+        let text_width = width(&bottom_text, &font, size);
+        let x = if text_width < image_width {
+            (image_width - text_width) / 2
+        } else {
+            0
+        };
+        image.draw_text(bottom_text, &font, size, (x + offset, image_height - 20 + offset), &px);
+    }
 
     let image_name = "output/output.jpg";
     image.save(image_name)?;
@@ -208,6 +224,19 @@ async fn main() -> Result<(), Box<dyn Error>> {
             let text = &prompt.parse_json(&response)[0];
             let text = censor.replace_with_offsets(&text, "*", 1, 0);
             println!("Text post:\n{}", &text);
+
+            let debug_info = format!(r#"
+            ══════════════
+            🤖 {model}
+            ❓ {prompt_text}
+            ❗ {interpolated_prompt}"#);
+            
+            println!("\n\nDEBUG INFO TO POST \n{}", &debug_info);
+        
+            let message_to_send = format!("{text}\n\n{debug_info}");
+            send_mastodon_msg(message_to_send).await?;
+        
+            println!("Mastodon message sent!!!");
         },
         PromptType::Image => {
             let top_text = &prompt.parse_json(&response)[0];
@@ -226,19 +255,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     }
 
 
-//     let debug_info = format!(r#"
-// ═══════════════
-// 🤖 {model}
-// ❓ {prompt_text}
-// ❗ {interpolated_prompt}
-//     "#);
 
-//     println!("\n\nDEBUG INFO TO POST \n{}", &debug_info);
-
-//     let message_to_send = format!("{text}\n\n{debug_info}");
-//     send_mastodon_msg(message_to_send).await?;
-
-//     println!("Mastodon message sent!!!");
 
 
     Ok(())
