@@ -5,7 +5,7 @@ use rand::prelude::*;
 use regex::Regex;
 use censor::Censor;
 use serde_json;
-use image2::{*, text::{font, load_font}};
+use image2::{*, text::{font, load_font, width}};
 
 #[derive(Debug)]
 enum PromptType {
@@ -155,24 +155,39 @@ async fn send_mastodon_msg(text: String) -> Result<String, Box<dyn Error>> {
     Ok(text)
 }
 
-fn generate_image(image_name: &str, top_text: &str, bottom_text: &str) -> Result<(), Box<dyn Error>> {
+fn get_image_from_prompt(prompt: &str) -> String {
+    let matches: Vec<_> = prompt.match_indices('"').collect();
+    let (first_index,_) = matches[0];
+    let (last_index,_) = matches[1];
+    let between_quotes = &prompt[first_index+1..last_index];
+    between_quotes.to_owned()
+}
+
+fn generate_image(image_name: &str, top_text: &str, bottom_text: &str) -> Result<String, Box<dyn Error>> {
     let font = load_font("font/Anton-Regular.ttf")?;
-    let image_name = format!("resources/{}.jpg", image_name);
+    let image_name = format!("images/{}.jpg", image_name);
     let mut image = Image::<f32, Rgb>::open(image_name)?;
     let px: Pixel<Rgb> = Pixel::from(vec![1.0_f64, 1.0, 1.0]);
+    let size = 55.0_f32;
+    let image_width = image.size().width;
     let image_height = image.size().height;
 
-    image.draw_text(top_text, &font, 120.0, (25, 120), &px);
-    image.draw_text(bottom_text, &font, 120.0, (25, image_height - 120 / 2), &px);
+    let text_width = width(&top_text, &font, size);
+    let x = (image_width - text_width) / 2;
+    image.draw_text(top_text, &font, size, (x, size as usize), &px);
 
-    image.save("output/output.jpg")?;
-    Ok(())
+    let text_width = width(&bottom_text, &font, size);
+    let x = (image_width - text_width) / 2;
+    image.draw_text(bottom_text, &font, size, (x, image_height - 20), &px);
+
+    let image_name = "output/output.jpg";
+    image.save(image_name)?;
+    Ok(image_name.to_owned())
 }
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
-    generate_image("badluckbryan", "LIVE IN CURRENT WORLD", "PRETEND THAT LIFE MAKES SENSE")?;
-/*    let prompts = load_prompts().await?;
+    let prompts = load_prompts().await?;
     let prompt = prompts.choose(&mut thread_rng()).unwrap();
     let prompt_text = &prompt.prompt;
     let interpolated_prompt = prompt.interpolate().await?;
@@ -184,7 +199,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         "gpt-4"
     }.to_string();
     println!("GPT model: {}", &model);
-    let response = query_chat_gpt(model.clone(), full_prompt).await?;
+    let response = query_chat_gpt(model.clone(), full_prompt.clone()).await?;
     let censor = Censor::Standard + Censor::Sex - "sex" - "ass";
 
     println!("Response JSON from ChatGPT\n{}", &response);
@@ -199,27 +214,32 @@ async fn main() -> Result<(), Box<dyn Error>> {
             let top_text = censor.replace_with_offsets(&top_text, "*", 1, 0);
             let bottom_text = &prompt.parse_json(&response)[1];
             let bottom_text = censor.replace_with_offsets(&bottom_text, "*", 1, 0);
+            let image_meme = get_image_from_prompt(&full_prompt);
             println!("Image meme");
             println!("TOP TEXT    : {}", &top_text);
             println!("BOTTOM TEXT : {}", &bottom_text);
+            println!("IMAGE       : {}", &image_meme);
+            println!("Generating image");
+            let image_file = generate_image(&image_meme, &top_text, &bottom_text)?;
+            println!("Image file: {}", &image_file);
         },
     }
 
 
-    let debug_info = format!(r#"
-═══════════════
-🤖 {model}
-❓ {prompt_text}
-❗ {interpolated_prompt}
-    "#);
+//     let debug_info = format!(r#"
+// ═══════════════
+// 🤖 {model}
+// ❓ {prompt_text}
+// ❗ {interpolated_prompt}
+//     "#);
 
-    println!("\n\nDEBUG INFO TO POST \n{}", &debug_info);
+//     println!("\n\nDEBUG INFO TO POST \n{}", &debug_info);
 
-    // let message_to_send = format!("{text}\n\n{debug_info}");
-    // send_mastodon_msg(message_to_send).await?;
+//     let message_to_send = format!("{text}\n\n{debug_info}");
+//     send_mastodon_msg(message_to_send).await?;
 
-    // println!("Mastodon message sent!!!");
+//     println!("Mastodon message sent!!!");
 
-*/
+
     Ok(())
 }
