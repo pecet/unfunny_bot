@@ -1,10 +1,14 @@
-use std::{error::Error, env};
+use std::{error::Error, env, collections::HashMap};
 use async_openai::{types::{CreateChatCompletionRequestArgs, ChatCompletionRequestMessageArgs, Role}, Client};
+use reqwest::{multipart::{Form, self}, Body};
 use tokio::{fs::*, io::{BufReader, AsyncBufReadExt}};
 use rand::prelude::*;
 use regex::Regex;
 use censor::Censor;
-use serde_json;
+use serde_json::{self, Map, Value};
+use image2::{*, text::{font, load_font, width}};
+use futures::stream::TryStreamExt;
+use tokio_util::codec::{BytesCodec, FramedRead};
 
 #[derive(Debug)]
 enum PromptType {
@@ -61,6 +65,32 @@ impl Prompt {
         }
         Ok(interpolated)
     }
+
+    fn prompt_json(&self) -> String {
+        match self.prompt_type {
+            PromptType::Text => "Respond only with JSON with 'text' field.",
+            PromptType::Image => "Respond only with JSON with 'top_text' and 'bottom_text' for image meme macro.",
+        }.to_owned()
+    }
+
+    fn parse_json(&self, response: &str) -> Vec<String> {
+        let mut vec: Vec<String> = vec![];
+        match self.prompt_type {
+            PromptType::Text => {
+                let map: serde_json::Map<String, serde_json::Value> = serde_json::from_str(response).unwrap();
+                let text = map["text"].as_str().expect("Cannot parse JSON!");
+                vec.push(text.to_owned()); 
+            },
+            PromptType::Image => {
+                let map: serde_json::Map<String, serde_json::Value> = serde_json::from_str(response).unwrap();
+                let bottom_text = map["bottom_text"].as_str().expect("Cannot parse bottom text from JSON!").to_uppercase().replace("\n", " ");
+                let top_text = map["top_text"].as_str().expect("Cannot parse top text from JSON!").to_uppercase().replace("\n", " ");
+                vec.push(top_text.to_owned());
+                vec.push(bottom_text.to_owned());
+            },
+        }
+        vec
+    }
 }
 
 impl From<Vec<&str>> for Prompt {
@@ -108,12 +138,45 @@ async fn query_chat_gpt(model: String, prompt: String) -> Result<String, Box<dyn
     Ok(first_response)
 }
 
-async fn send_mastodon_msg(text: String) -> Result<String, Box<dyn Error>> {
+fn file_to_body(file: File) -> Body {
+    let stream = FramedRead::new(file, BytesCodec::new());
+    let body = Body::wrap_stream(stream);
+    body
+}
+
+async fn send_mastodon_image(image_path: String) -> Result<String, Box<dyn Error>> {
+    let instance = env::var("MAST_INSTANCE")?;
+    let token = env::var("MAST_TOKEN")?;
+    let url = format!("https://{instance}/api/v2/media");
+    let client = reqwest::Client::new();
+    let file = File::open(image_path.clone()).await?;
+    let stream = FramedRead::new(file, BytesCodec::new());
+    let file_body = Body::wrap_stream(stream);
+    let some_file = multipart::Part::stream(file_body)
+        .file_name(image_path)
+        .mime_str("image/jpeg")?;
+    let form = multipart::Form::new().part("file", some_file);
+    let response = client
+        .post(url)
+        .bearer_auth(token)
+        .multipart(form)
+        .send().await?;
+    let text = response.text().await?;
+    println!("{}", &text);
+    let obj: Map<String, Value> = serde_json::from_str(&text)?;
+    let id = &obj["id"].as_str().unwrap();
+
+    Ok(id.to_string())
+}
+
+async fn send_mastodon_msg(text: String, image_id: Option<String>) -> Result<String, Box<dyn Error>> {
     let params = [
         ("status", text.clone()),
         ("visibility", "public".to_owned()),
         ("language", "en".to_owned()),
+        ("media_ids[]", image_id.unwrap_or(String::new())),
     ];
+
     let instance = env::var("MAST_INSTANCE")?;
     let token = env::var("MAST_TOKEN")?;
     let url = format!("https://{instance}/api/v1/statuses");
@@ -128,6 +191,51 @@ async fn send_mastodon_msg(text: String) -> Result<String, Box<dyn Error>> {
     Ok(text)
 }
 
+fn get_image_from_prompt(prompt: &str) -> String {
+    let matches: Vec<_> = prompt.match_indices('"').collect();
+    let (first_index,_) = matches[0];
+    let (last_index,_) = matches[1];
+    let between_quotes = &prompt[first_index+1..last_index];
+    between_quotes.to_owned()
+}
+
+fn generate_image(image_name: &str, top_text: &str, bottom_text: &str) -> Result<String, Box<dyn Error>> {
+    let font = load_font("font/Anton-Regular.ttf")?;
+    let image_name = format!("images/{}.jpg", image_name);
+    let mut image = Image::<f32, Rgb>::open(image_name)?;
+    let size = 55.0_f32;
+    let image_width = image.size().width;
+    let image_height = image.size().height;
+
+    for offset in 0..=4 {
+        let offset = 4 - offset;
+        let px: Pixel<Rgb> = if offset != 0 {
+            Pixel::from(vec![1.0_f64, 1.0, 1.0])
+        } else {
+            Pixel::from(vec![0.0_f64, 0.0, 0.0])
+        };
+
+        let text_width = width(&top_text, &font, size);
+        let x = if text_width < image_width {
+            (image_width - text_width) / 2
+        } else {
+            0
+        };
+        image.draw_text(top_text, &font, size, (x + offset, size as usize + offset), &px);
+    
+        let text_width = width(&bottom_text, &font, size);
+        let x = if text_width < image_width {
+            (image_width - text_width) / 2
+        } else {
+            0
+        };
+        image.draw_text(bottom_text, &font, size, (x + offset, image_height - 20 + offset), &px);
+    }
+
+    let image_name = "output/output.jpg";
+    image.save(image_name)?;
+    Ok(image_name.to_owned())
+}
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
@@ -135,7 +243,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let prompt = prompts.choose(&mut thread_rng()).unwrap();
     let prompt_text = &prompt.prompt;
     let interpolated_prompt = prompt.interpolate().await?;
-    let full_prompt = format!("Respond only with JSON with 'text' field. {}", interpolated_prompt);
+    let full_prompt = format!("{} {}", prompt.prompt_json(), interpolated_prompt);
     println!("Full prompt: {:#?}", &full_prompt);
     let model = if thread_rng().gen_bool(0.9) {
         "gpt-3.5-turbo"
@@ -143,26 +251,51 @@ async fn main() -> Result<(), Box<dyn Error>> {
         "gpt-4"
     }.to_string();
     println!("GPT model: {}", &model);
-    let response = query_chat_gpt(model.clone(), full_prompt).await?;
-    println!("Response JSON from ChatGPT\n{}", &response);
-    let map: serde_json::Map<String, serde_json::Value> = serde_json::from_str(&response).unwrap();
-    let text = map["text"].as_str().expect("Cannot parse JSON!");
-    let censor = Censor::Standard + Censor::Sex - "sex";
-    let text = censor.replace_with_offsets(&text, "*", 1, 0);
-    println!("Parsed and censored text:\n\n{}\n", &text);
+    let response = query_chat_gpt(model.clone(), full_prompt.clone()).await?;
+    let censor = Censor::Standard + Censor::Sex - "sex" - "ass";
 
     let debug_info = format!(r#"
-═══════════════
-🤖 {model}
-❓ {prompt_text}
-❗ {interpolated_prompt}
-    "#);
+    ══════════════
+    🤖 {model}
+    ❓ {prompt_text}
+    ❗ {interpolated_prompt}"#);
+    
+    println!("\n\nDEBUG INFO TO POST \n{}", &debug_info);
 
-    println!("DEBUG INFO TO POST \n{}", &debug_info);
+    println!("Response JSON from ChatGPT\n{}", &response);
+    match prompt.prompt_type {
+        PromptType::Text => {
+            let text = &prompt.parse_json(&response)[0];
+            let text = censor.replace_with_offsets(&text, "*", 1, 0);
+            println!("Text post:\n{}", &text);
+        
+            let message_to_send = format!("{text}\n\n{debug_info}");
+            send_mastodon_msg(message_to_send, None).await?;
+        
+            println!("Mastodon message sent!!!");
+        },
+        PromptType::Image => {
+            let top_text = &prompt.parse_json(&response)[0];
+            let top_text = censor.replace_with_offsets(&top_text, "*", 1, 0);
+            let bottom_text = &prompt.parse_json(&response)[1];
+            let bottom_text = censor.replace_with_offsets(&bottom_text, "*", 1, 0);
+            let image_meme = get_image_from_prompt(&full_prompt);
+            println!("Image meme");
+            println!("TOP TEXT    : {}", &top_text);
+            println!("BOTTOM TEXT : {}", &bottom_text);
+            println!("IMAGE       : {}", &image_meme);
+            println!("Generating image");
+            let image_file = generate_image(&image_meme, &top_text, &bottom_text)?;
+            println!("Image file: {}", &image_file);
+            let image_id = send_mastodon_image(image_file).await?; 
+            println!("Posted image file, and got its id: {}", &image_id);
 
-    let message_to_send = format!("{text}\n\n{debug_info}");
-    send_mastodon_msg(message_to_send).await?;
+            let message_to_send = format!("{debug_info}");
+            send_mastodon_msg(message_to_send, image_id.into()).await?;
 
-    println!("Mastodon message sent!!!");
+            println!("Mastodon message sent!!!");
+        },
+    }
+
     Ok(())
 }

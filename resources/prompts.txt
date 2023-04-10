@@ -11,3 +11,13 @@ text; Ask silly question about {noun}. Respond with funny response.
 text; In most funny way explain how {noun} works.
 text; What you will get if you cross {noun} and {noun}? Give funniest anwser, include question.
 text; {write} very short funny story about {noun}.
+image; {write} texts for "{image}" image meme. Do not include meme name in answer.
+image; {write} texts for "{image}" image meme about {noun}. Do not include meme name in answer.
+image; {write} texts for "{image}" image meme. Do not include meme name in answer.
+image; {write} texts for "{image}" image meme about {noun}. Do not include meme name in answer.
+image; {write} texts for "{image}" image meme. Do not include meme name in answer.
+image; {write} texts for "{image}" image meme about {noun}. Do not include meme name in answer.
+image; {write} texts for "{image}" image meme. Do not include meme name in answer.
+image; {write} texts for "{image}" image meme about {noun}. Do not include meme name in answer.
+image; {write} texts for "{image}" image meme. Do not include meme name in answer.
+image; {write} texts for "{image}" image meme about {noun}. Do not include meme name in answer.
