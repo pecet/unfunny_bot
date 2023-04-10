@@ -1,11 +1,14 @@
-use std::{error::Error, env};
+use std::{error::Error, env, collections::HashMap};
 use async_openai::{types::{CreateChatCompletionRequestArgs, ChatCompletionRequestMessageArgs, Role}, Client};
+use reqwest::{multipart::{Form, self}, Body};
 use tokio::{fs::*, io::{BufReader, AsyncBufReadExt}};
 use rand::prelude::*;
 use regex::Regex;
 use censor::Censor;
-use serde_json;
+use serde_json::{self, Map, Value};
 use image2::{*, text::{font, load_font, width}};
+use futures::stream::TryStreamExt;
+use tokio_util::codec::{BytesCodec, FramedRead};
 
 #[derive(Debug)]
 enum PromptType {
@@ -135,12 +138,45 @@ async fn query_chat_gpt(model: String, prompt: String) -> Result<String, Box<dyn
     Ok(first_response)
 }
 
-async fn send_mastodon_msg(text: String) -> Result<String, Box<dyn Error>> {
+fn file_to_body(file: File) -> Body {
+    let stream = FramedRead::new(file, BytesCodec::new());
+    let body = Body::wrap_stream(stream);
+    body
+}
+
+async fn send_mastodon_image(image_path: String) -> Result<String, Box<dyn Error>> {
+    let instance = env::var("MAST_INSTANCE")?;
+    let token = env::var("MAST_TOKEN")?;
+    let url = format!("https://{instance}/api/v2/media");
+    let client = reqwest::Client::new();
+    let file = File::open(image_path.clone()).await?;
+    let stream = FramedRead::new(file, BytesCodec::new());
+    let file_body = Body::wrap_stream(stream);
+    let some_file = multipart::Part::stream(file_body)
+        .file_name(image_path)
+        .mime_str("image/jpeg")?;
+    let form = multipart::Form::new().part("file", some_file);
+    let response = client
+        .post(url)
+        .bearer_auth(token)
+        .multipart(form)
+        .send().await?;
+    let text = response.text().await?;
+    println!("{}", &text);
+    let obj: Map<String, Value> = serde_json::from_str(&text)?;
+    let id = &obj["id"].as_str().unwrap();
+
+    Ok(id.to_string())
+}
+
+async fn send_mastodon_msg(text: String, image_id: Option<String>) -> Result<String, Box<dyn Error>> {
     let params = [
         ("status", text.clone()),
         ("visibility", "public".to_owned()),
         ("language", "en".to_owned()),
+        ("media_ids[]", image_id.unwrap_or(String::new())),
     ];
+
     let instance = env::var("MAST_INSTANCE")?;
     let token = env::var("MAST_TOKEN")?;
     let url = format!("https://{instance}/api/v1/statuses");
@@ -218,23 +254,23 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let response = query_chat_gpt(model.clone(), full_prompt.clone()).await?;
     let censor = Censor::Standard + Censor::Sex - "sex" - "ass";
 
+    let debug_info = format!(r#"
+    ══════════════
+    🤖 {model}
+    ❓ {prompt_text}
+    ❗ {interpolated_prompt}"#);
+    
+    println!("\n\nDEBUG INFO TO POST \n{}", &debug_info);
+
     println!("Response JSON from ChatGPT\n{}", &response);
     match prompt.prompt_type {
         PromptType::Text => {
             let text = &prompt.parse_json(&response)[0];
             let text = censor.replace_with_offsets(&text, "*", 1, 0);
             println!("Text post:\n{}", &text);
-
-            let debug_info = format!(r#"
-            ══════════════
-            🤖 {model}
-            ❓ {prompt_text}
-            ❗ {interpolated_prompt}"#);
-            
-            println!("\n\nDEBUG INFO TO POST \n{}", &debug_info);
         
             let message_to_send = format!("{text}\n\n{debug_info}");
-            send_mastodon_msg(message_to_send).await?;
+            send_mastodon_msg(message_to_send, None).await?;
         
             println!("Mastodon message sent!!!");
         },
@@ -251,12 +287,15 @@ async fn main() -> Result<(), Box<dyn Error>> {
             println!("Generating image");
             let image_file = generate_image(&image_meme, &top_text, &bottom_text)?;
             println!("Image file: {}", &image_file);
+            let image_id = send_mastodon_image(image_file).await?; 
+            println!("Posted image file, and got its id: {}", &image_id);
+
+            let message_to_send = format!("{debug_info}");
+            send_mastodon_msg(message_to_send, image_id.into()).await?;
+
+            println!("Mastodon message sent!!!");
         },
     }
-
-
-
-
 
     Ok(())
 }

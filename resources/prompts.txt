@@ -1,16 +1,16 @@
-#text; {write} {joke_type} joke about {noun}.
-#text; {write} 4chan green text about {noun}.
-#text; {write} short 2 verse long {song_type} song with chorus about {noun}.
-#text; {write} funny poem about {noun}.
-#text; {write} funny and short mastodon message about {noun}.
-#text; {write} funny food recipe using {noun} and {noun}.
-#text; {write} short 2 verse long {song_type} song about {noun} with chorus about {noun}.
-#text; {write} haiku about {noun}.
-#text; {write} very funny love letter to {noun} mention {noun}.
-#text; Ask silly question about {noun}. Respond with funny response.
-#text; In most funny way explain how {noun} works.
-#text; What you will get if you cross {noun} and {noun}? Give funniest anwser, include question.
-#text; {write} very short funny story about {noun}.
+text; {write} {joke_type} joke about {noun}.
+text; {write} 4chan green text about {noun}.
+text; {write} short 2 verse long {song_type} song with chorus about {noun}.
+text; {write} funny poem about {noun}.
+text; {write} funny and short mastodon message about {noun}.
+text; {write} funny food recipe using {noun} and {noun}.
+text; {write} short 2 verse long {song_type} song about {noun} with chorus about {noun}.
+text; {write} haiku about {noun}.
+text; {write} very funny love letter to {noun} mention {noun}.
+text; Ask silly question about {noun}. Respond with funny response.
+text; In most funny way explain how {noun} works.
+text; What you will get if you cross {noun} and {noun}? Give funniest anwser, include question.
+text; {write} very short funny story about {noun}.
 image; {write} texts for "{image}" image meme. Do not include meme name in answer.
 image; {write} texts for "{image}" image meme about {noun}. Do not include meme name in answer.
 image; {write} texts for "{image}" image meme. Do not include meme name in answer.
