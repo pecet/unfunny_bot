@@ -1,21 +1,24 @@
 use async_openai::{
-    types::{ChatCompletionRequestMessageArgs, CreateChatCompletionRequestArgs, Role},
+    types::{
+        ChatCompletionFunctionsArgs, ChatCompletionRequestMessageArgs,
+        CreateChatCompletionRequestArgs, Role, ChatCompletionFunctions,
+    },
     Client,
 };
 use censor::Censor;
-use futures::stream::TryStreamExt;
+
 use image2::{
-    text::{font, load_font, width},
+    text::{load_font, width},
     *,
 };
 use rand::prelude::*;
 use regex::Regex;
 use reqwest::{
-    multipart::{self, Form},
+    multipart::{self},
     Body,
 };
-use serde_json::{self, Map, Value};
-use std::{collections::HashMap, env, error::Error};
+use serde_json::{self, json, Map, Value};
+use std::{env, error::Error};
 use tokio::{
     fs::*,
     io::{AsyncBufReadExt, BufReader},
@@ -85,43 +88,53 @@ impl Prompt {
         Ok(interpolated)
     }
 
-    fn prompt_json(&self) -> String {
-        match self.prompt_type {
-            PromptType::Text => "Respond only with JSON with 'text' field.",
-            PromptType::Image => {
-                "Respond only with JSON with 'top_text' and 'bottom_text' for image meme macro."
-            }
+    fn get_function_call(&self) -> Value {
+        match &self.prompt_type {
+            PromptType::Text => json!({"name":"set_text"}),
+            PromptType::Image => json!({"name":"set_meme"}),
         }
-        .to_owned()
     }
 
-    fn parse_json(&self, response: &str) -> Vec<String> {
-        let mut vec: Vec<String> = vec![];
-        match self.prompt_type {
+    fn get_functions(&self) -> Vec<ChatCompletionFunctions> {
+        match &self.prompt_type {
             PromptType::Text => {
-                let map: serde_json::Map<String, serde_json::Value> =
-                    serde_json::from_str(response).unwrap();
-                let text = map["text"].as_str().expect("Cannot parse JSON!");
-                vec.push(text.to_owned());
+                vec![
+                    ChatCompletionFunctionsArgs::default()
+                        .name("set_text")
+                        .description("Set the current text to display to user")
+                        .parameters(json!({
+                            "type": "object",
+                            "properties": {
+                                "text": {
+                                    "type": "string",
+                                }
+                            },
+                            "required": ["text"],
+                        }))
+                        .build().unwrap()
+                ]
             }
             PromptType::Image => {
-                let map: serde_json::Map<String, serde_json::Value> =
-                    serde_json::from_str(response).unwrap();
-                let bottom_text = map["bottom_text"]
-                    .as_str()
-                    .expect("Cannot parse bottom text from JSON!")
-                    .to_uppercase()
-                    .replace("\n", " ");
-                let top_text = map["top_text"]
-                    .as_str()
-                    .expect("Cannot parse top text from JSON!")
-                    .to_uppercase()
-                    .replace("\n", " ");
-                vec.push(top_text.to_owned());
-                vec.push(bottom_text.to_owned());
+                vec![
+                    ChatCompletionFunctionsArgs::default()
+                        .name("set_meme")
+                        .description("Set the current meme to display to user")
+                        .parameters(json!({
+                            "type": "object",
+                            "properties": {
+                                "top_text": {
+                                    "type": "string",
+                                },
+                                "bottom_text": {
+                                    "type": "string",
+                                }                                
+                            },
+                            "required": ["top_text", "bottom_text"],
+                        }))
+                        .build().unwrap()
+                ]
             }
         }
-        vec
     }
 }
 
@@ -151,27 +164,25 @@ async fn load_prompts() -> Result<Vec<Prompt>, Box<dyn Error>> {
     Ok(prompts)
 }
 
-async fn query_chat_gpt(model: String, prompt: String) -> Result<String, Box<dyn Error>> {
-    let client = Client::new();
-    let prompt = prompt.clone();
+async fn query_chat_gpt(model: String, prompt: String, functions: Vec<ChatCompletionFunctions>, function_call: Value) -> Result<Value, Box<dyn Error>> {
+    let proxy = reqwest::Proxy::all("http://127.0.0.1:8080")?;
+    let http_client = reqwest::Client::builder().proxy(proxy).build()?;
+    let client = Client::new().with_http_client(http_client);
     let request = CreateChatCompletionRequestArgs::default()
         .max_tokens(768u16)
         .model(model)
+        .functions(functions)
         .messages([ChatCompletionRequestMessageArgs::default()
-            .role(Role::System)
+            .role(Role::User)
             .content(prompt)
             .build()?])
+        .function_call(function_call)
         .build()?;
     let response = client.chat().create(request).await?;
     let first_response = response.choices.get(0).ok_or("No first item in response")?;
-    let first_response = first_response.message.content.to_owned();
-    Ok(first_response.unwrap())
-}
-
-fn file_to_body(file: File) -> Body {
-    let stream = FramedRead::new(file, BytesCodec::new());
-    let body = Body::wrap_stream(stream);
-    body
+    let function_call = first_response.message.function_call.clone().unwrap();
+    let function_args: Value = function_call.arguments.parse().unwrap();
+    Ok(function_args)
 }
 
 async fn send_mastodon_image(image_path: String) -> Result<String, Box<dyn Error>> {
@@ -293,16 +304,15 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let prompt = prompts.choose(&mut thread_rng()).unwrap();
     let prompt_text = &prompt.prompt;
     let interpolated_prompt = prompt.interpolate().await?;
-    let full_prompt = format!("{} {}", prompt.prompt_json(), interpolated_prompt);
-    println!("Full prompt: {:#?}", &full_prompt);
-    let model = if thread_rng().gen_bool(0.9) {
+    println!("Prompt: {:#?}", &interpolated_prompt);
+    let model = if thread_rng().gen_bool(0.95) {
         "gpt-3.5-turbo"
     } else {
         "gpt-4"
     }
     .to_string();
     println!("GPT model: {}", &model);
-    let response = query_chat_gpt(model.clone(), full_prompt.clone()).await?;
+    let response = query_chat_gpt(model.clone(), interpolated_prompt.clone(), prompt.get_functions(), prompt.get_function_call()).await?;
     let censor = Censor::Standard + Censor::Sex - "sex" - "ass";
 
     let debug_info = format!(
@@ -318,21 +328,18 @@ async fn main() -> Result<(), Box<dyn Error>> {
     println!("Response JSON from ChatGPT\n{}", &response);
     match prompt.prompt_type {
         PromptType::Text => {
-            let text = &prompt.parse_json(&response)[0];
-            let text = censor.replace_with_offsets(&text, "*", 1, 0);
+            let text = censor.replace_with_offsets(&response["text"].as_str().unwrap(), "*", 1, 0);
             println!("Text post:\n{}", &text);
-
-            let message_to_send = format!("{text}\n\n{debug_info}");
-            send_mastodon_msg(message_to_send, None).await?;
+            send_mastodon_msg(text, None).await?;
 
             println!("Mastodon message sent!!!");
         }
         PromptType::Image => {
-            let top_text = &prompt.parse_json(&response)[0];
+            let top_text = &response["top_text"].as_str().unwrap();
             let top_text = censor.replace_with_offsets(&top_text, "*", 1, 0);
-            let bottom_text = &prompt.parse_json(&response)[1];
+            let bottom_text = &response["bottom_text"].as_str().unwrap();
             let bottom_text = censor.replace_with_offsets(&bottom_text, "*", 1, 0);
-            let image_meme = get_image_from_prompt(&full_prompt);
+            let image_meme = get_image_from_prompt(&interpolated_prompt);
             println!("Image meme");
             println!("TOP TEXT    : {}", &top_text);
             println!("BOTTOM TEXT : {}", &bottom_text);
@@ -343,8 +350,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
             let image_id = send_mastodon_image(image_file).await?;
             println!("Posted image file, and got its id: {}", &image_id);
 
-            let message_to_send = format!("{debug_info}");
-            send_mastodon_msg(message_to_send, image_id.into()).await?;
+            send_mastodon_msg("".to_owned(), image_id.into()).await?;
 
             println!("Mastodon message sent!!!");
         }
