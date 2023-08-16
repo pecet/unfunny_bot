@@ -165,8 +165,9 @@ async fn load_prompts() -> Result<Vec<Prompt>, Box<dyn Error>> {
 }
 
 async fn query_chat_gpt(model: String, prompt: String, functions: Vec<ChatCompletionFunctions>, function_call: Value) -> Result<Value, Box<dyn Error>> {
-    let proxy = reqwest::Proxy::all("http://127.0.0.1:8080")?;
-    let http_client = reqwest::Client::builder().proxy(proxy).build()?;
+    // let proxy = reqwest::Proxy::all("http://127.0.0.1:8080")?;
+    // let http_client = reqwest::Client::builder().proxy(proxy).build()?;
+    let http_client = reqwest::Client::new();
     let client = Client::new().with_http_client(http_client);
     let request = CreateChatCompletionRequestArgs::default()
         .max_tokens(768u16)
